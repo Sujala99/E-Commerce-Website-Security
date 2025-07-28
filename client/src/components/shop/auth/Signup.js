@@ -1,7 +1,21 @@
 import React, { Fragment, useState } from "react";
 import { signupReq } from "./fetchApi";
 import { useSnackbar } from 'notistack';
-const Signup = (props) => {
+import { Helmet } from "react-helmet";
+
+// Utility functions
+const sanitize = (value) => value.replace(/[<>]/g, '');
+
+const isStrongPassword = (pwd) =>
+  pwd.length >= 8 &&
+  /[A-Z]/.test(pwd) &&
+  /[a-z]/.test(pwd) &&
+  /\d/.test(pwd) &&
+  /[\W]/.test(pwd); // symbol check
+
+const Signup = () => {
+  const { enqueueSnackbar } = useSnackbar();
+
   const [data, setData] = useState({
     name: "",
     email: "",
@@ -12,12 +26,16 @@ const Signup = (props) => {
     success: false,
   });
 
+  const [attempts, setAttempts] = useState(0);
+  const [locked, setLocked] = useState(false);
+
   const alert = (msg, type) => (
     <div className={`text-sm text-${type}-500`}>{msg}</div>
   );
-  const { enqueueSnackbar } = useSnackbar();
+
   const formSubmit = async () => {
-    setData({ ...data, loading: true });
+    if (locked) return;
+
     if (data.cPassword !== data.password) {
       return setData({
         ...data,
@@ -27,13 +45,33 @@ const Signup = (props) => {
         },
       });
     }
+
+    if (!isStrongPassword(data.password)) {
+      return setData({
+        ...data,
+        error: {
+          password: "Password must be 8+ characters, include uppercase, number, and symbol",
+        },
+      });
+    }
+
+    setAttempts((prev) => prev + 1);
+    if (attempts >= 5) {
+      setLocked(true);
+      enqueueSnackbar("Too many attempts. Try again later.", { variant: "error" });
+      return;
+    }
+
+    setData({ ...data, loading: true });
+
     try {
-      let responseData = await signupReq({
-        name: data.name,
-        email: data.email,
+      const responseData = await signupReq({
+        name: sanitize(data.name),
+        email: sanitize(data.email),
         password: data.password,
         cPassword: data.cPassword,
       });
+
       if (responseData.error) {
         setData({
           ...data,
@@ -51,129 +89,108 @@ const Signup = (props) => {
           cPassword: "",
           loading: false,
           error: false,
-        })
-        enqueueSnackbar('Account Created Successfully..!', { variant: 'success' })
+        });
+        enqueueSnackbar("Account Created Successfully..!", { variant: "success" });
       }
     } catch (error) {
-      console.log(error);
+      console.error(error);
     }
   };
 
   return (
     <Fragment>
+      <Helmet>
+        <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; object-src 'none';" />
+        <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+        <meta http-equiv="X-Frame-Options" content="DENY" />
+      </Helmet>
+
       <div className="text-center text-2xl mb-6">Register</div>
       <form className="space-y-4">
-        {data.success ? alert(data.success, "green") : ""}
+        {data.success && alert(data.success, "green")}
+
+        {/* Name Field */}
         <div className="flex flex-col">
-          <label htmlFor="name">
-            Name<span className="text-sm text-gray-600 ml-1">*</span>
-          </label>
+          <label htmlFor="name">Name<span className="text-sm text-gray-600 ml-1">*</span></label>
           <input
-            onChange={(e) =>
-              setData({
-                ...data,
-                success: false,
-                error: {},
-                name: e.target.value,
-              })
-            }
+            onChange={(e) => setData({ ...data, success: false, error: {}, name: sanitize(e.target.value) })}
             value={data.name}
             type="text"
             id="name"
-            className={`${
-              data.error.name ? "border-red-500" : ""
-            } px-4 py-2 focus:outline-none border`}
+            autoComplete="off"
+            className={`${data.error.name ? "border-red-500" : ""} px-4 py-2 focus:outline-none border`}
           />
-          {!data.error ? "" : alert(data.error.name, "red")}
+          {data.error.name && alert(data.error.name, "red")}
         </div>
+
+        {/* Email Field */}
         <div className="flex flex-col">
-          <label htmlFor="email">
-            Email address<span className="text-sm text-gray-600 ml-1">*</span>
-          </label>
+          <label htmlFor="email">Email address<span className="text-sm text-gray-600 ml-1">*</span></label>
           <input
-            onChange={(e) =>
-              setData({
-                ...data,
-                success: false,
-                error: {},
-                email: e.target.value,
-              })
-            }
+            onChange={(e) => setData({ ...data, success: false, error: {}, email: sanitize(e.target.value) })}
             value={data.email}
             type="email"
             id="email"
-            className={`${
-              data.error.email ? "border-red-500" : ""
-            } px-4 py-2 focus:outline-none border`}
+            autoComplete="off"
+            className={`${data.error.email ? "border-red-500" : ""} px-4 py-2 focus:outline-none border`}
           />
-          {!data.error ? "" : alert(data.error.email, "red")}
+          {data.error.email && alert(data.error.email, "red")}
         </div>
+
+        {/* Password Field */}
         <div className="flex flex-col">
-          <label htmlFor="password">
-            Password<span className="text-sm text-gray-600 ml-1">*</span>
-          </label>
+          <label htmlFor="password">Password<span className="text-sm text-gray-600 ml-1">*</span></label>
           <input
-            onChange={(e) =>
+            onChange={(e) => {
+              const value = e.target.value;
               setData({
                 ...data,
                 success: false,
-                error: {},
-                password: e.target.value,
-              })
-            }
+                error: !isStrongPassword(value)
+                  ? { password: "Must include upper/lowercase, number, symbol, 8+ chars" }
+                  : {},
+                password: value,
+              });
+            }}
             value={data.password}
             type="password"
             id="password"
-            className={`${
-              data.error.password ? "border-red-500" : ""
-            } px-4 py-2 focus:outline-none border`}
+            autoComplete="new-password"
+            className={`${data.error.password ? "border-red-500" : ""} px-4 py-2 focus:outline-none border`}
           />
-          {!data.error ? "" : alert(data.error.password, "red")}
+          {data.error.password && alert(data.error.password, "red")}
         </div>
+
+        {/* Confirm Password */}
         <div className="flex flex-col">
-          <label htmlFor="cPassword">
-            Confirm password
-            <span className="text-sm text-gray-600 ml-1">*</span>
-          </label>
+          <label htmlFor="cPassword">Confirm password<span className="text-sm text-gray-600 ml-1">*</span></label>
           <input
-            onChange={(e) =>
-              setData({
-                ...data,
-                success: false,
-                error: {},
-                cPassword: e.target.value,
-              })
-            }
+            onChange={(e) => setData({ ...data, success: false, error: {}, cPassword: e.target.value })}
             value={data.cPassword}
             type="password"
             id="cPassword"
-            className={`${
-              data.error.cPassword ? "border-red-500" : ""
-            } px-4 py-2 focus:outline-none border`}
+            autoComplete="new-password"
+            className={`${data.error.cPassword ? "border-red-500" : ""} px-4 py-2 focus:outline-none border`}
           />
-          {!data.error ? "" : alert(data.error.cPassword, "red")}
+          {data.error.cPassword && alert(data.error.cPassword, "red")}
         </div>
+
+        {/* Optional Remember Me */}
         <div className="flex flex-col space-y-2 md:flex-row md:justify-between md:items-center">
           <div>
-            <input
-              type="checkbox"
-              id="rememberMe"
-              className="px-4 py-2 focus:outline-none border mr-1"
-            />
-            <label htmlFor="rememberMe">
-              Remember me<span className="text-sm text-gray-600">*</span>
-            </label>
+            <input type="checkbox" id="rememberMe" className="px-4 py-2 focus:outline-none border mr-1" />
+            <label htmlFor="rememberMe">Remember me<span className="text-sm text-gray-600">*</span></label>
           </div>
-          <a className="block text-gray-600" href="/">
-            Lost your password?
-          </a>
+          <a className="block text-gray-600" href="/forgot-password">Lost your password?</a>
         </div>
+
+        {/* Submit Button */}
         <div
-          onClick={(e) => formSubmit()}
+          onClick={formSubmit}
           style={{ background: "#303031" }}
           className="px-4 py-2 text-white text-center cursor-pointer font-medium"
         >
-          Create an account
+          {locked ? "Locked Out" : "Create an account"}
         </div>
       </form>
     </Fragment>

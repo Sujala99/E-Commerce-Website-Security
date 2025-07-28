@@ -11,12 +11,16 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
-      index: { unique: true },
+      unique: true,
       match: /^([a-zA-Z0-9_\.\-])+\@(([a-zA-Z0-9\-])+\.)+([a-zA-Z0-9]{2,4})+$/,
     },
     password: {
       type: String,
       required: true,
+    },
+    oldPasswords: {
+      type: [String],
+      default: [],
     },
     userRole: {
       type: Number,
@@ -41,9 +45,21 @@ const userSchema = new mongoose.Schema(
       type: Array,
       default: [],
     },
+    failedLoginAttempts: {
+      type: Number,
+      default: 0,
+    },
+    lockUntil: {
+      type: Date,
+    },
+    otpCode: {
+     type: String,
+    },
+    otpExpires: {
+      type: Date,
+    },
   },
   { timestamps: true }
 );
 
-const userModel = mongoose.model("users", userSchema);
-module.exports = userModel;
+module.exports = mongoose.model("users", userSchema);

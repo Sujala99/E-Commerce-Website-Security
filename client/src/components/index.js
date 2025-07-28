@@ -14,12 +14,22 @@ import { DashboardAdmin, Categories, Products, Orders } from "./admin";
 import { UserProfile, UserOrders, SettingUser } from "./shop/dashboardUser";
 
 import { BrowserRouter as Router, Switch, Route } from "react-router-dom";
+import Login from "./shop/auth/Login";
+import ForgotPassword from "./shop/auth/ForgotPassword";
+import VerifyOtp from "./shop/auth/VerifyOtp";
+import ResetPassword from "./shop/auth/ResetPassword";
 
 /* Routing All page will be here */
 const Routes = (props) => {
   return (
     <Router>
       <Switch>
+
+                {/* Auth */}
+        <Route exact path="/login" component={Login} />
+        <Route exact path="/forgot-password" component={ForgotPassword} />
+        <Route exact path="/verify-otp" component={VerifyOtp} />
+        <Route exact path="/reset-password" component={ResetPassword} />
         {/* Shop & Public Routes */}
         <Route exact path="/" component={Home} />
         <Route exact path="/wish-list" component={WishList} />

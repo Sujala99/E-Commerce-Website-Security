@@ -4,14 +4,202 @@ const userModel = require("../models/users");
 const jwt = require("jsonwebtoken");
 const { JWT_SECRET } = require("../config/keys");
 
+const sendEmail = require("../utils/sendMail");
+
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCK_TIME_MINUTES = 15;
+const TOKEN_EXPIRES_IN = "30m";
+const PASSWORD_HISTORY_LIMIT = 5;
+
 class Auth {
+  async postSignup(req, res) {
+    let { name, email, password, cPassword, userRole } = req.body;
+    let error = {};
+
+    if (!name || !email || !password || !cPassword) {
+      return res.json({ error: "All fields are required" });
+    }
+
+    if (name.length < 3 || name.length > 25) {
+      return res.json({ error: "Name must be 3-25 characters" });
+    }
+
+    if (!validateEmail(email)) {
+      return res.json({ error: "Email is invalid" });
+    }
+
+    if (password.length < 8 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+      return res.json({
+        error: "Password must be at least 8 characters and include a number and uppercase letter",
+      });
+    }
+
+    try {
+      const existing = await userModel.findOne({ email });
+      if (existing) return res.json({ error: "Email already exists" });
+
+      const hashed = bcrypt.hashSync(password, 10);
+      const newUser = new userModel({
+        name: toTitleCase(name),
+        email,
+        password: hashed,
+        userRole: userRole || 0,
+        oldPasswords: [hashed],
+      });
+
+      await newUser.save();
+      return res.json({ success: "Account created successfully. Please login." });
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  }
+
+  async postSignin(req, res) {
+    const { email, password } = req.body;
+    if (!email || !password) return res.json({ error: "Fields must not be empty" });
+
+    try {
+      const user = await userModel.findOne({ email });
+      if (!user) return res.json({ error: "Invalid email or password" });
+
+      // Lock check
+      if (user.lockUntil && user.lockUntil > Date.now()) {
+        return res.json({ error: "Account is locked. Try again later." });
+      }
+
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) {
+        user.failedLoginAttempts += 1;
+        if (user.failedLoginAttempts >= MAX_FAILED_ATTEMPTS) {
+          user.lockUntil = Date.now() + LOCK_TIME_MINUTES * 60 * 1000;
+        }
+        await user.save();
+        return res.json({ error: "Invalid email or password" });
+      }
+
+      // Reset login attempts
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
+      await user.save();
+
+      const token = jwt.sign(
+        { _id: user._id, role: user.userRole },
+        JWT_SECRET,
+        { expiresIn: TOKEN_EXPIRES_IN }
+      );
+
+      return res.json({ token, user: { _id: user._id, role: user.userRole } });
+    } catch (err) {
+      console.log(err);
+    }
+  }
+
+
+async verifyOtp(req, res) {
+  const { email, otp } = req.body;
+  const user = await userModel.findOne({ email });
+
+  if (!user || user.otpCode !== otp || Date.now() > user.otpExpires) {
+    return res.json({ error: "Invalid or expired OTP" });
+  }
+
+  return res.json({ success: "OTP verified" });
+}
+
+
+async forgotPassword(req, res) {
+  const { email } = req.body;
+  if (!email) return res.json({ error: "Email is required" });
+
+  const user = await userModel.findOne({ email });
+  if (!user) return res.json({ error: "User not found" });
+
+  const otp = Math.floor(10000 + Math.random() * 90000).toString();
+  const expiry = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+  user.otpCode = otp;
+  user.otpExpires = expiry;
+  await user.save();
+
+  try {
+    await sendEmail(
+      user.email,
+      "Your OTP Code (Valid for 10 mins)",
+      `Your OTP code is: ${otp}`
+    );
+    res.json({ success: "OTP sent to email" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to send email" });
+  }
+}
+
+
+async resetPassword(req, res) {
+  const { email, otp, newPassword } = req.body;
+
+  const user = await userModel.findOne({ email });
+  if (!user) return res.json({ error: "User not found" });
+
+  if (user.otpCode !== otp || Date.now() > user.otpExpires) {
+    return res.json({ error: "Invalid or expired OTP" });
+  }
+
+  const reused = await Promise.all(
+    user.oldPasswords.map(old => bcrypt.compare(newPassword, old))
+  );
+
+  if (reused.includes(true)) {
+    return res.json({ error: "Cannot reuse an old password" });
+  }
+
+  const hashed = bcrypt.hashSync(newPassword, 10);
+  user.password = hashed;
+  user.oldPasswords.unshift(hashed);
+  user.oldPasswords = user.oldPasswords.slice(0, 5);
+  user.otpCode = null;
+  user.otpExpires = null;
+
+  await user.save();
+  return res.json({ success: "Password has been reset" });
+}
+
+
+  async changePassword(req, res) {
+    const { uId, oldPassword, newPassword } = req.body;
+    if (!uId || !oldPassword || !newPassword) {
+      return res.json({ error: "All fields are required" });
+    }
+
+    const user = await userModel.findById(uId);
+    if (!user) return res.json({ error: "User not found" });
+
+    const match = await bcrypt.compare(oldPassword, user.password);
+    if (!match) return res.json({ error: "Old password is incorrect" });
+
+    for (let old of user.oldPasswords) {
+      if (await bcrypt.compare(newPassword, old)) {
+        return res.json({ error: "You cannot reuse an old password" });
+      }
+    }
+
+    const hashed = bcrypt.hashSync(newPassword, 10);
+    user.password = hashed;
+    user.oldPasswords.unshift(hashed);
+    user.oldPasswords = user.oldPasswords.slice(0, PASSWORD_HISTORY_LIMIT);
+    await user.save();
+
+    return res.json({ success: "Password updated successfully" });
+  }
+
   async isAdmin(req, res) {
     let { loggedInUserId } = req.body;
     try {
-      let loggedInUserRole = await userModel.findById(loggedInUserId);
-      res.json({ role: loggedInUserRole.userRole });
+      let loggedInUser = await userModel.findById(loggedInUserId);
+      res.json({ role: loggedInUser.userRole });
     } catch {
-      res.status(404);
+      res.status(404).json({ error: "User not found" });
     }
   }
 
@@ -20,123 +208,10 @@ class Auth {
       let allUser = await userModel.find({});
       res.json({ users: allUser });
     } catch {
-      res.status(404);
-    }
-  }
-
-  /* User Registration/Signup controller  */
-  async postSignup(req, res) {
-    let { name, email, password, cPassword } = req.body;
-    let error = {};
-    if (!name || !email || !password || !cPassword) {
-      error = {
-        ...error,
-        name: "Filed must not be empty",
-        email: "Filed must not be empty",
-        password: "Filed must not be empty",
-        cPassword: "Filed must not be empty",
-      };
-      return res.json({ error });
-    }
-    if (name.length < 3 || name.length > 25) {
-      error = { ...error, name: "Name must be 3-25 charecter" };
-      return res.json({ error });
-    } else {
-      if (validateEmail(email)) {
-        name = toTitleCase(name);
-        if ((password.length > 255) | (password.length < 8)) {
-          error = {
-            ...error,
-            password: "Password must be 8 charecter",
-            name: "",
-            email: "",
-          };
-          return res.json({ error });
-        } else {
-          // If Email & Number exists in Database then:
-          try {
-            password = bcrypt.hashSync(password, 10);
-            const data = await userModel.findOne({ email: email });
-            if (data) {
-              error = {
-                ...error,
-                password: "",
-                name: "",
-                email: "Email already exists",
-              };
-              return res.json({ error });
-            } else {
-              let newUser = new userModel({
-                name,
-                email,
-                password,
-                // ========= Here role 1 for admin signup role 0 for customer signup =========
-                userRole: 1, // Field Name change to userRole from role
-              });
-              newUser
-                .save()
-                .then((data) => {
-                  return res.json({
-                    success: "Account create successfully. Please login",
-                  });
-                })
-                .catch((err) => {
-                  console.log(err);
-                });
-            }
-          } catch (err) {
-            console.log(err);
-          }
-        }
-      } else {
-        error = {
-          ...error,
-          password: "",
-          name: "",
-          email: "Email is not valid",
-        };
-        return res.json({ error });
-      }
-    }
-  }
-
-  /* User Login/Signin controller  */
-  async postSignin(req, res) {
-    let { email, password } = req.body;
-    if (!email || !password) {
-      return res.json({
-        error: "Fields must not be empty",
-      });
-    }
-    try {
-      const data = await userModel.findOne({ email: email });
-      if (!data) {
-        return res.json({
-          error: "Invalid email or password",
-        });
-      } else {
-        const login = await bcrypt.compare(password, data.password);
-        if (login) {
-          const token = jwt.sign(
-            { _id: data._id, role: data.userRole },
-            JWT_SECRET
-          );
-          const encode = jwt.verify(token, JWT_SECRET);
-          return res.json({
-            token: token,
-            user: encode,
-          });
-        } else {
-          return res.json({
-            error: "Invalid email or password",
-          });
-        }
-      }
-    } catch (err) {
-      console.log(err);
+      res.status(404).json({ error: "Could not fetch users" });
     }
   }
 }
 
-const authController = new Auth();
-module.exports = authController;
+
+module.exports = new Auth(); 
